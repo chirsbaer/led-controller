@@ -1,10 +1,19 @@
 #include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
 
 // Define the GPIO pins for the MOSFETs controlling the LED strips
 const int WHITE_LED_PIN = 25;  // White LED strip pin (Used for both white and yellow)
 const int RED_LED_PIN = 26;    // RGB - Red pin (Used for both red and orange)
 const int GREEN_LED_PIN = 27;  // RGB - Green pin
 const int BLUE_LED_PIN = 14;   // RGB - Blue pin
+
+// Define the pin where the NeoPixel stick is connected
+#define NEOPIXEL_PIN    15
+// Define the number of pixels in the NeoPixel stick
+#define NUMPIXELS       8
+// Create the NeoPixel object
+Adafruit_NeoPixel pixels(NUMPIXELS, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
 
 // Define the LED Channel for the ESP32 (each color should have its own channel)
 const int CHANNEL_WHITE = 0;
@@ -25,6 +34,8 @@ const int BTN_TOGGLE_COLOR = 35;
 // Define the color profiles for yellow/orange and blue in terms of PWM duty cycle (0 - 65535)
 const uint16_t COLOR_YELLOW_ORANGE[3] = { 65535, 32768, 0 };  // Example values: Full red, half green, no blue
 const uint16_t COLOR_BLUE[3] = { 0, 0, 65535 };               // Example values: No red, no green, full blue
+// Define the color for the white mode on the RGB strip
+const uint16_t COLOR_WHITE[3] = {65535, 65535, 65535};
 
 // Dimmer levels array (8 levels)
 const uint16_t DIMMER_LEVELS[8] = { 0, 8191, 16383, 24575, 32768, 40960, 49152, 65535 };
@@ -68,6 +79,10 @@ void setup() {
   pinMode(BTN_LESS_LIGHT, INPUT_PULLUP);
   pinMode(BTN_ON_OFF, INPUT_PULLUP);
   pinMode(BTN_TOGGLE_COLOR, INPUT_PULLUP);
+
+  // Initialize the NeoPixel stick
+  pixels.begin();
+  pixels.show(); // Initialize all pixels to 'off'
 
   // Initialize all LEDs to off
   setLEDs();
@@ -145,7 +160,61 @@ void togglePower() {
   setLEDs();       // Update the LEDs
 }
 
+
+void smoothDimming(uint16_t targetLevel) {
+  uint16_t currentLevel = DIMMER_LEVELS[dimmerIndex]; // Get the current brightness level
+  int stepDelay = 2000 / abs(int(currentLevel) - int(targetLevel)); // Calculate the delay per step for a 2 second transition
+
+  while (currentLevel != targetLevel) {
+    if (currentLevel < targetLevel) {
+      currentLevel++;
+    } else if (currentLevel > targetLevel) {
+      currentLevel--;
+    }
+    // Apply the new brightness level
+    ledcWrite(CHANNEL_WHITE, (colorMode == 2) ? currentLevel : 0); // Assuming white mode is represented by 2
+    ledcWrite(CHANNEL_RED, (colorMode == 0) ? currentLevel : 0);
+    ledcWrite(CHANNEL_GREEN, (colorMode == 0) ? currentLevel / 2 : 0); // Assuming yellow has half green
+    ledcWrite(CHANNEL_BLUE, (colorMode == 1) ? currentLevel : 0);
+    // Reflect this change on the RGB LED stick as well
+    updateRGBStick(currentLevel);
+    delay(stepDelay);
+  }
+}
+
+void updateBrightness(bool increase) {
+  // Increase or decrease dimmer index within bounds
+  if (increase && dimmerIndex < 7) {
+    dimmerIndex++;
+  } else if (!increase && dimmerIndex > 0) {
+    dimmerIndex--;
+  }
+  smoothDimming(DIMMER_LEVELS[dimmerIndex]); // Use smooth dimming to reach the new brightness level
+}
+
 void changeColor() {
-  colorMode = (colorMode + 1) % 2;  // Toggle between the two color modes
-  setLEDs();                        // Update the LEDs
+  colorMode = (colorMode + 1) % 3; // Now we have three color modes (0: Yellow/Orange, 1: Blue, 2: White)
+  smoothDimming(DIMMER_LEVELS[dimmerIndex]); // Update the LEDs with smooth transition
+}
+
+// Function to update the RGB LED stick to reflect the current dimming level and color
+void updateRGBStick(uint16_t brightness) {
+  uint32_t color;
+
+  // Choose color based on the current color mode
+  if (colorMode == 0) { // Yellow/orange color
+    color = pixels.Color(brightness >> 8, brightness >> 9, 0); // Scaling down the 16-bit brightness to 8-bit
+  } else if (colorMode == 1) { // Blue color
+    color = pixels.Color(0, 0, brightness >> 8);
+  } else { // White color (assuming colorMode == 2)
+    color = pixels.Color(brightness >> 8, brightness >> 8, brightness >> 8);
+  }
+
+  // Set the color for each pixel in the stick
+  for(int i = 0; i < NUMPIXELS; i++) {
+    pixels.setPixelColor(i, color);
+  }
+
+  // Apply the changes to the stick
+  pixels.show();
 }
